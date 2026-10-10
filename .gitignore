@@ -1,3 +1,6 @@
 .DS_Store
 Thumbs.db
 *.zip
+scripts/.list-cache/
+
+scripts/run-gate-win.sh

@@ -73,8 +73,8 @@ pass() { echo "PASS  $*"; }
 fail() { echo "FAIL  $*"; FAILS=$((FAILS + 1)); }
 section() { echo; echo "=== $* ==="; }
 
-REQUIRED=(manifest.json src/popup.html src/popup.js src/debug.js src/debug-bridge.js src/vendor/video-swap-new.user.js src/vendor/LICENSE-TwitchAdSolutions src/youtube.js icons/icon16.png icons/icon48.png icons/icon128.png)
-ALLOWED_RE='^(manifest\.json|src/popup\.html|src/popup\.js|src/debug\.js|src/debug-bridge\.js|src/vendor/video-swap-new\.user\.js|src/vendor/LICENSE-TwitchAdSolutions|src/vendor/README\.md|src/youtube\.js|icons/icon16\.png|icons/icon48\.png|icons/icon128\.png)$'
+REQUIRED=(manifest.json src/popup.html src/popup.js src/debug.js src/debug-bridge.js src/vendor/video-swap-new.user.js src/vendor/LICENSE-TwitchAdSolutions src/youtube.js src/rules/general-network.json src/rules/meta.json src/rules/LICENSES.md icons/icon16.png icons/icon48.png icons/icon128.png)
+ALLOWED_RE='^(manifest\.json|src/popup\.html|src/popup\.js|src/debug\.js|src/debug-bridge\.js|src/vendor/video-swap-new\.user\.js|src/vendor/LICENSE-TwitchAdSolutions|src/vendor/README\.md|src/youtube\.js|src/rules/general-network\.json|src/rules/meta\.json|src/rules/LICENSES\.md|src/rules/README\.md|src/rules/cosmetic-sample\.json|icons/icon16\.png|icons/icon48\.png|icons/icon128\.png)$'
 
 section "1. Package allowlist + version"
 VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PKG/manifest.json")"
@@ -226,7 +226,12 @@ PY
 
 section "3. Dangerous APIs + identity / phone-home"
 SCAN_ROOT="$PKG/src"
-SCAN_PATHS=("$SCAN_ROOT")
+# General-list DNR artifacts under src/rules/ intentionally name ad/malware hosts.
+# Scan packaged JS only; keep rules/ out of danger/tracker/host checks.
+mapfile -t SCAN_PATHS < <(find "$SCAN_ROOT" -type f \( -name '*.js' -o -name '*.html' \) ! -path '*/rules/*' | sort)
+if [[ "${#SCAN_PATHS[@]}" -eq 0 ]]; then
+  SCAN_PATHS=("$SCAN_ROOT")
+fi
 # video-swap-new (pixeltris) needs eval(workerString) to boot the player worker
 # blob and one innerHTML write for the in-player "Blocking ads" banner. Allow only
 # those two known lines in the vendored userscript; everything else still fails.
@@ -278,6 +283,8 @@ allowed_host_bits = (
 )
 urls = []
 for path in root.rglob("*.js"):
+    if "rules" in path.parts:
+        continue
     for line in path.read_text(errors="replace").splitlines():
         stripped = line.lstrip()
         if stripped.startswith("//"):
@@ -296,6 +303,22 @@ if bad:
 print("PASS  outbound URL hosts within Twitch/YouTube family")
 for path, url in urls:
     print(f"  {url}")
+PY
+
+# Packed list artifacts must stay within the static-rule budget (DNR agent owns wiring).
+python3 - "$PKG/src/rules/general-network.json" <<'PY' || FAILS=$((FAILS + 1))
+import json, sys
+path = sys.argv[1]
+rules = json.load(open(path, encoding="utf-8"))
+if not isinstance(rules, list):
+    print("FAIL  general-network.json must be a JSON array"); sys.exit(1)
+n = len(rules)
+if n > 28000:
+    print(f"FAIL  DNR rule count {n} exceeds 28000 headroom budget"); sys.exit(1)
+ids = [r.get("id") for r in rules]
+if ids != list(range(1, n + 1)):
+    print("FAIL  DNR rule ids must be contiguous from 1"); sys.exit(1)
+print(f"PASS  general-network.json has {n} DNR rules (<=28000)")
 PY
 
 section "4. Privileged extension API usage"
